@@ -1,0 +1,15 @@
+[project]
+name = "streaming-progress"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "genkit",
+    "genkit-plugin-google-genai",
+    "genkit-plugin-fastapi",
+    "fastapi",
+    "uvicorn",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

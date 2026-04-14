@@ -1,37 +1,44 @@
 # genkit-ux-patterns
 
-*Reference patterns for building interactive AI-powered applications with Genkit Python, FastAPI, and Next.js + shadcn.*
+*A map of interactive agentic UX patterns for 2026 — built with Genkit Python, FastAPI, and Next.js + shadcn.*
 
-> "The most important patterns in LLM app development should fit on one screen."
+---
 
-## How to use this
+Modern AI applications are splitting into two kinds:
 
-**Don't clone this repo. Point your coding agent at it.**
+**Background agents** — you give a vague prompt, they run for an hour, make decisions on your behalf, come back with a result. Fire and forget.
 
-When you want to add a pattern to your app, tell your agent:
+**Interactive agents** — the agent is present. It asks clarifying questions before starting. It surfaces decisions for approval mid-task. It streams live progress while it works. The interaction loop *is* the product.
 
-> "Look at https://github.com/jeffdh5/genkit-ux-patterns/tree/main/patterns/01-streaming-chat and add streaming chat to my application."
+This repo covers the second kind. Each pattern is a minimal, working sample of a real interactive UX problem — small enough to read in 5 minutes, complete enough to actually work.
 
-The agent reads the sample, understands the pattern, and wires it into your codebase. Each pattern is intentionally minimal — small enough to read in 5 minutes, complete enough to actually work.
+---
 
 ## Patterns
 
 | # | Pattern | What it shows |
 |---|---------|---------------|
 | [01](./patterns/01-streaming-chat) | Streaming Chat | Genkit flow → FastAPI SSE → Next.js hook |
-| 02 | Coming soon: Tool Approval & HITL | Interruptible tools, approve/decline/edit UI |
-| 03 | Coming soon: Multi-tenant API keys | Per-user model config in Genkit flows |
-| 04 | Coming soon: Streaming agent progress | Live status from inside a multi-step flow |
+| 02 | Tool Approval & HITL *(coming soon)* | Interruptible tools, approve/decline/edit UI |
+| 03 | Multi-tenant API keys *(coming soon)* | Per-user model config in Genkit flows |
+| 04 | Streaming agent progress *(coming soon)* | Live status from inside a multi-step flow |
+
+---
+
+## How to use this
+
+**Browse** to understand what's possible. Each pattern folder has a README that explains the problem, shows the core code, and describes when you'd use it.
+
+**Point your coding agent at a pattern** when you're ready to add it to your app:
+
+> *"Look at https://github.com/jeffdh5/genkit-ux-patterns/tree/main/patterns/01-streaming-chat and add streaming chat to my application."*
+
+Cursor, Claude Code, Codex — they can all read this repo and wire the pattern into your codebase.
+
+---
 
 ## Philosophy
 
-These are [shadcn](https://ui.shadcn.com/)-style patterns for LLM app architecture — not a framework, not a library. Read the code, understand it, adapt it. Backends are under 80 lines. Frontends are one page + one hook. No magic, no abstractions to fight.
+Backends under 80 lines. Frontends: one page + one hook. No framework, no magic — code you can read, own, and adapt. Think [shadcn/ui](https://ui.shadcn.com/) but for LLM app architecture patterns.
 
-The patterns cover **interactive agentic UX** — the emerging class of AI apps where the agent is present, surfaces decisions in real time, asks clarifying questions, and needs human input mid-task. Not background agents you fire and forget, but applications where the interaction loop is the product.
-
-## Stack
-
-- **Backend**: [Genkit Python](https://github.com/firebase/genkit) + FastAPI
-- **Frontend**: Next.js 15, shadcn/ui, TypeScript
-- **AI**: Google AI (Gemini) — swap for any Genkit-supported model
-- **Deploy**: Cloud Run (Dockerfiles included per pattern)
+**Stack:** Genkit Python · FastAPI · Next.js 15 · shadcn/ui · Google AI (Gemini) · Cloud Run

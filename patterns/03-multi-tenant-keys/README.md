@@ -1,120 +1,282 @@
-# Multi-tenant API Keys — Bring Your Own Key
+# Pattern 03: Multi-Tenant BYOK with GCIP + Secret Manager
 
-Imagine you're building **LeadFlow** — an agentic SaaS where sales teams connect their CRM, describe their ideal customer profile, and an AI agent goes out and finds targeted leads. Some of your power users want to use their own Gemini API key. Others want to choose which model their agent runs on — Gemini Flash for speed, Gemini Pro for quality. You want to support both without managing a vault of customer keys or rebuilding your backend per user.
+**Scenario:** You're building **LeadFlow**, an agentic lead-generation SaaS that helps B2B companies qualify prospects using AI. Your users are privacy-conscious—they want their Gemini API usage billed directly to their own Google Cloud accounts, not yours. They also want the flexibility to choose between `gemini-2.0-flash` (fast, cheap) and `gemini-1.5-pro` (deeper reasoning) depending on the complexity of their campaigns.
 
-This pattern shows how to do it in ~10 lines of backend code.
+This pattern demonstrates **passwordless authentication** (GCIP magic links), **secure BYOK storage** (GCP Secret Manager), and **per-request API key override** with Genkit.
 
----
+## Architecture
 
-## The pattern
-
-The key insight: Genkit's `ai.generate()` accepts a `config` dict that overrides the plugin's default API key for that call only. One global `Genkit` instance, no shared key risk, no per-request overhead.
-
-**Backend — the whole pattern:**
-
-```python
-# One global Genkit instance — no API key at startup
-ai = Genkit(plugins=[GoogleAI()], model="googleai/gemini-2.0-flash")
-
-@app.post("/flow/chat")
-@genkit_fastapi_handler(ai)
-@ai.flow()
-async def chat(input: ChatInput, ctx: ActionRunContext) -> str:
-    sr = ai.generate_stream(
-        prompt=input.question,
-        config={
-            "api_key": input.api_key,   # ← user's key, per-request
-            # "model": input.model,     # ← optionally let user pick model too
-        }
-    )
-    async for chunk in sr.stream:
-        if chunk.text:
-            ctx.send_chunk(chunk.text)
+```
+┌─────────────┐
+│  User email │
+└──────┬──────┘
+       │
+       ▼
+┌──────────────────────────────────────────────┐
+│ GCIP Magic Link (free up to 49,999 MAU)     │
+└──────┬───────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────┐
+│ Firebase JWT (verified on every request)    │
+└──────┬───────────────────────────────────────┘
+       │
+       ├─► POST /api/key
+       │   └─► Secret Manager: user-{uid}-gemini-key
+       │       (encrypted at rest, audit logged)
+       │
+       └─► POST /flow/chat
+           └─► fetch key → Genkit config={"api_key": key}
+               └─► stream response
 ```
 
-Genkit creates a temporary client for that call. The key is used once and discarded. Nothing is stored server-side.
+## Why This Way
 
-**Frontend — one line different from the basic streaming pattern:**
+1. **No password fatigue**: Magic links eliminate password reset flows and credential databases.
+2. **Zero credential exposure**: API keys never touch your app database—Secret Manager encrypts at rest and provides audit logs.
+3. **User control**: Each user brings their own Gemini API key; billing goes to their Google Cloud account.
+4. **Per-user rate limits**: Google enforces quotas per key, naturally isolating tenants.
+5. **Extensible**: Store model preference in Firestore (see "Extend this" below).
 
-```ts
-const res = await fetch(api, {
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json",
-        "X-Api-Key": apiKey,  // ← from localStorage, never from your DB
-    },
-    body: JSON.stringify({ data: { question, api_key: apiKey } }),
+## The Pattern
+
+### Store Key (Backend)
+
+```python
+from google.cloud import secretmanager
+
+def store_api_key(uid: str, api_key: str):
+    secret_name = f"projects/{GCP_PROJECT_ID}/secrets/user-{uid}-gemini-key"
+
+    # Create secret if doesn't exist
+    try:
+        secret_client.get_secret(name=secret_name)
+    except Exception:
+        secret_client.create_secret(
+            request={
+                "parent": f"projects/{GCP_PROJECT_ID}",
+                "secret_id": f"user-{uid}-gemini-key",
+                "secret": {"replication": {"automatic": {}}},
+            }
+        )
+
+    # Add new version
+    secret_client.add_secret_version(
+        request={
+            "parent": secret_name,
+            "payload": {"data": api_key.encode("utf-8")},
+        }
+    )
+```
+
+### Chat Endpoint (Backend)
+
+```python
+@app.post("/flow/chat")
+async def chat(request: ChatRequest, uid: str = Depends(verify_firebase_token)):
+    # 1. Fetch user's key from Secret Manager
+    api_key = fetch_api_key(uid)
+
+    # 2. Stream with per-request key override
+    async def generate():
+        full_text = ""
+        stream = ai.generate_stream(request.message, config={"api_key": api_key})
+        for chunk in stream:
+            chunk_text = chunk.text
+            full_text += chunk_text
+            yield f'data: {{"message": "{chunk_text}"}}\n\n'
+        yield f'data: {{"result": "{full_text}"}}\n\n'
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+```
+
+### Frontend Flow
+
+```typescript
+// 1. Send magic link
+await sendMagicLink(email);
+
+// 2. User clicks link in email
+handleMagicLinkCallback(); // → sets user state
+
+// 3. Save API key
+await fetch("/api/key", {
+  method: "POST",
+  headers: { Authorization: `Bearer ${idToken}` },
+  body: JSON.stringify({ api_key }),
+});
+
+// 4. Chat with streaming
+const res = await fetch("/flow/chat", {
+  method: "POST",
+  headers: { Authorization: `Bearer ${idToken}` },
+  body: JSON.stringify({ message }),
 });
 ```
 
----
+## GCP Setup
 
-## When to use this
+### 1. Enable APIs
 
-- **BYOK features** — power users want cost control or want to use their own quota
-- **Model selection** — let users choose Gemini Flash vs Pro based on their subscription tier
-- **Per-user rate limiting** — each user's key has its own quota; no shared exhaustion
-- **Regulated industries** — some enterprise customers won't send data through a shared key
-- **White-label SaaS** — your product, their API credentials
+```bash
+gcloud services enable \
+  identitytoolkit.googleapis.com \
+  secretmanager.googleapis.com
+```
 
----
+### 2. IAM Roles
 
-## Security note
+Your backend's **service account** (Application Default Credentials) needs:
 
-The API key lives in the user's browser (`localStorage`) and travels as an HTTP header. It is never logged, stored in a database, or persisted server-side. Your server is stateless with respect to keys — it receives one per request, uses it, and forgets it.
+- **Secret Manager Admin** (`roles/secretmanager.admin`) — to create/write user secrets
+- **Secret Manager Secret Accessor** (`roles/secretmanager.secretAccessor`) — to read user secrets
 
-For production: use HTTPS (always), consider masking the key in logs, and add rate limiting per key on your API layer.
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_SERVICE_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.admin"
 
----
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_SERVICE_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
 
-## Extend this
+## GCIP Setup
 
-**Add model selection:** Add a `model: str` field to `ChatInput`, pass it as `config={"api_key": ..., "model": input.model}`. Your UI renders a model picker. Your backend runs whatever model the user chose.
+### 1. Enable GCIP in Firebase Console
 
-**Add key validation:** Before running the flow, make a lightweight test call with the user's key and return a clear error if it's invalid. Better UX than a cryptic stream failure.
+1. Go to [Firebase Console](https://console.firebase.google.com)
+2. Select your project
+3. Navigate to **Authentication** → **Sign-in method**
+4. Enable **Email/Password** provider
+5. Under **Email/Password**, enable **Email link (passwordless sign-in)**
 
-Tell your coding agent:
-> "Look at https://github.com/jeffdh5/agentic-ux-patterns/tree/main/patterns/03-multi-tenant-keys and add bring-your-own-key support to my application."
+### 2. Authorized Domains
 
----
+Add your frontend domain (e.g., `localhost`, `yourdomain.com`) to **Authorized domains** in the Firebase Console under Authentication → Settings.
 
-## Run locally
+### 3. Environment Variables (Frontend)
 
-**Backend:**
+Create `.env.local` in `frontend/`:
+
+```bash
+NEXT_PUBLIC_FIREBASE_API_KEY=AIza...
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=123456789
+NEXT_PUBLIC_FIREBASE_APP_ID=1:123456789:web:abc123
+```
+
+### 4. Environment Variables (Backend)
+
+```bash
+export GCP_PROJECT_ID=your-project
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+## Pricing
+
+- **GCIP**: Free up to **49,999 MAU** (Monthly Active Users). See [Firebase Pricing](https://firebase.google.com/pricing).
+- **Secret Manager**:
+  - **Active secret versions**: $0.06 per secret per month (1 secret per user)
+  - **Access operations**: $0.03 per 10,000 operations
+  - **Free tier**: 3 active secrets, 10,000 access operations/month
+- **Gemini API**: Billed to **user's Google Cloud account**, not yours.
+
+## Extend This
+
+### Model Selection per User
+
+Store user preferences in **Firestore**:
+
+```python
+# Backend: fetch model + key from Firestore + Secret Manager
+from firebase_admin import firestore
+
+db = firestore.client()
+user_doc = db.collection("users").document(uid).get()
+model = user_doc.get("model") or "googleai/gemini-2.0-flash"
+api_key = fetch_api_key(uid)
+
+stream = ai.generate_stream(
+    request.message,
+    model=model,
+    config={"api_key": api_key}
+)
+```
+
+**Frontend**: Add dropdown in settings card:
+
+```tsx
+<Select value={model} onValueChange={setModel}>
+  <SelectItem value="googleai/gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+  <SelectItem value="googleai/gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
+</Select>
+```
+
+### Audit Logging
+
+Enable **Secret Manager audit logs** in Cloud Logging to track key access:
+
+```bash
+gcloud logging read "protoPayload.serviceName=secretmanager.googleapis.com" --limit 50
+```
+
+### Key Rotation
+
+Add a `/api/key/rotate` endpoint that creates a new secret version and invalidates the old one.
+
+## Point Your Agent Prompt
+
+If you're building an agent-based LeadFlow system, here's a sample **system prompt**:
+
+```
+You are LeadFlow, an AI lead qualification assistant. Analyze prospect data and:
+1. Score lead quality (A/B/C/D)
+2. Extract key pain points from conversation transcripts
+3. Suggest personalized outreach angles
+4. Flag red flags (budget mismatch, wrong industry, etc.)
+
+Format output as JSON:
+{
+  "score": "A",
+  "pain_points": ["scaling challenges", "manual data entry"],
+  "outreach_angle": "Emphasize automation ROI",
+  "red_flags": []
+}
+```
+
+## Running the App
+
+### Backend
+
 ```bash
 cd backend
-uv run python src/main.py
-# No GOOGLE_API_KEY needed — keys come from users
+uv venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+uv pip install -e .
+export GCP_PROJECT_ID=your-project
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+uvicorn src.main:app --host 0.0.0.0 --port 3400
 ```
 
-**Frontend:**
+### Frontend
+
 ```bash
 cd frontend
-npm install && npm run dev
+npm install
+# Create .env.local with NEXT_PUBLIC_FIREBASE_* vars
+npm run dev
 ```
 
-Open http://localhost:3000, enter a Gemini API key, start chatting.
+Open [http://localhost:3000](http://localhost:3000)
+
+## What's Next
+
+- **Pattern 04**: Multi-agent orchestration with Genkit flows (lead research → qualification → outreach drafting)
+- **Pattern 05**: RAG with Firestore vector search (company knowledge base for personalized outreach)
 
 ---
 
-## Deploy to Cloud Run
-
-**Backend Dockerfile:**
-```dockerfile
-FROM python:3.14-slim
-WORKDIR /app
-COPY . .
-RUN pip install uv && uv sync
-EXPOSE 8080
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
-```
-
-```bash
-gcloud run deploy leadflow-backend \
-  --source ./backend \
-  --port 8080 \
-  --allow-unauthenticated
-  # No --set-secrets needed — no server-side API key
-```
-
-**Frontend:** same as pattern 01, set `NEXT_PUBLIC_BACKEND_URL` to your Cloud Run URL.
+**Why GCIP over Auth0/Clerk?** GCIP is free up to 50k users, natively integrated with Firebase (Firestore, Cloud Functions), and your JWT validation logic is 3 lines of Python. For startups, that's hard to beat.

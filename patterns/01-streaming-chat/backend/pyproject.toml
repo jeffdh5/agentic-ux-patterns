@@ -3,9 +3,9 @@ name = "genkit-fastapi-starter"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
-    "genkit>=0.5",
-    "genkit-plugin-google-genai>=0.5",
-    "genkit-plugin-fastapi>=0.5",
+    "genkit",
+    "genkit-plugin-google-genai",
+    "genkit-plugin-fastapi",
     "fastapi",
     "uvicorn",
 ]

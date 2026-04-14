@@ -19,7 +19,6 @@ This repo covers the second kind. Each pattern is a minimal, working sample of a
 | # | Pattern | What it shows |
 |---|---------|---------------|
 | [01](./patterns/01-streaming-chat) | Streaming Chat | Genkit flow → FastAPI SSE → Next.js hook |
-| 02 | Tool Approval & HITL *(coming soon)* | Interruptible tools, approve/decline/edit UI |
 | [03](./patterns/03-multi-tenant-keys) | Auth + BYOK | GCIP magic links + Secret Manager + Genkit key override |
 | [04](./patterns/04-streaming-progress) | Streaming Agent Progress | Live step-by-step status from multi-step flows |
 

@@ -2,8 +2,8 @@
 
 ```bash
 export GEMINI_API_KEY=your-key-here
-uv venv --python 3.12 .venv
-uv pip install -e .
+uv venv --python 3.14 .venv
+uv add -e .
 genkit start -- uv run src/main.py
 ```
 

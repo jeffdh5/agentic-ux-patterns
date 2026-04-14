@@ -33,7 +33,7 @@ This repo covers the second kind. Each pattern is a minimal, working sample of a
 
 > *"Look at https://github.com/jeffdh5/genkit-ux-patterns/tree/main/patterns/01-streaming-chat and add streaming chat to my application."*
 
-Cursor, Claude Code, Codex — they can all read this repo and wire the pattern into your codebase.
+Antigravity, Cursor, Claude Code — they can all read this repo and wire the pattern into your codebase.
 
 ---
 

@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/main.py
+src/genkit_fastapi_starter.egg-info/PKG-INFO
+src/genkit_fastapi_starter.egg-info/SOURCES.txt
+src/genkit_fastapi_starter.egg-info/dependency_links.txt
+src/genkit_fastapi_starter.egg-info/requires.txt
+src/genkit_fastapi_starter.egg-info/top_level.txt

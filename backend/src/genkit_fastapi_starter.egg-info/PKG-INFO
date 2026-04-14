@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: genkit-fastapi-starter
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: genkit>=0.5
+Requires-Dist: genkit-plugin-google-genai>=0.5
+Requires-Dist: genkit-plugin-fastapi>=0.5
+Requires-Dist: fastapi
+Requires-Dist: uvicorn

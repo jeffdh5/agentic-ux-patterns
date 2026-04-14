@@ -1,0 +1,5 @@
+genkit>=0.5
+genkit-plugin-google-genai>=0.5
+genkit-plugin-fastapi>=0.5
+fastapi
+uvicorn

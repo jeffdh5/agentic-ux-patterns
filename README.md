@@ -1,4 +1,4 @@
-# genkit-ux-patterns
+# agentic-ux-patterns
 
 *A map of interactive agentic UX patterns for 2026 — built with Genkit Python, FastAPI, and Next.js + shadcn.*
 

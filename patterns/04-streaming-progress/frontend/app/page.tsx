@@ -5,9 +5,7 @@ import { useAgentStream } from "@/hooks/useAgentStream";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Loader2,
   CheckCircle2,
@@ -15,6 +13,10 @@ import {
   Sparkles,
   BarChart3,
   PenLine,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  ArrowRight,
 } from "lucide-react";
 import type {
   EventChunk,
@@ -30,6 +32,13 @@ const SUBFLOW_ICONS = {
   draft_outreach: PenLine,
 };
 
+interface SubflowGroup {
+  name: string;
+  label: string;
+  status: "pending" | "active" | "done";
+  events: EventChunk[];
+}
+
 export default function Home() {
   const [input, setInput] = useState("");
   const { events, artifact, artifactTitle, activeSubflow, done, loading, submit } =
@@ -43,6 +52,7 @@ export default function Home() {
 
   const isRunning = loading || (events.length > 0 && !done);
 
+  // Input state - centered, minimal
   if (!isRunning && events.length === 0) {
     return (
       <div className="min-h-screen flex items-center justify-center p-8">
@@ -85,140 +95,138 @@ export default function Home() {
     );
   }
 
+  // Group events by subflow
+  const subflowGroups = groupEventsBySubflow(events, activeSubflow);
+
   return (
     <div className="min-h-screen p-6">
-      <div className="max-w-7xl mx-auto">
+      <div className="max-w-4xl mx-auto">
+        {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold mb-1">LeadFlow</h1>
-          <p className="text-sm text-muted-foreground">
-            {input}
-          </p>
+          <p className="text-sm text-muted-foreground">{input}</p>
         </div>
 
-        <div className="grid grid-cols-3 gap-6">
-          {/* Left Panel: Event Timeline */}
-          <div className="col-span-1">
-            <Card className="h-[calc(100vh-180px)]">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Agent Activity</CardTitle>
-              </CardHeader>
-              <Separator />
-              <ScrollArea className="h-[calc(100vh-260px)]">
-                <CardContent className="pt-4 space-y-3">
-                  {events.map((event, idx) => (
-                    <EventItem
-                      key={idx}
-                      event={event}
-                      isActive={
-                        event.type === "subflow" &&
-                        event.status === "started" &&
-                        activeSubflow === event.name
-                      }
-                    />
-                  ))}
-                  {loading && !done && events.length === 0 && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      <span className="text-sm">Starting...</span>
-                    </div>
-                  )}
-                </CardContent>
-              </ScrollArea>
-            </Card>
+        {/* Single column layout */}
+        <div className="space-y-6">
+          {/* Progress Section */}
+          <div className="space-y-2">
+            {subflowGroups.map((group, idx) => (
+              <SubflowRow key={idx} group={group} />
+            ))}
+            {loading && !done && events.length === 0 && (
+              <div className="flex items-center gap-2 text-muted-foreground py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">Starting...</span>
+              </div>
+            )}
           </div>
 
-          {/* Right Panel: Artifact */}
-          <div className="col-span-2">
-            <Card className="h-[calc(100vh-180px)]">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg">
-                    {artifactTitle || "Outreach Drafts"}
-                  </CardTitle>
-                  {done && (
-                    <Badge variant="outline" className="text-green-400 border-green-400">
-                      <CheckCircle2 className="mr-1 h-3 w-3" />
-                      Complete
-                    </Badge>
-                  )}
-                </div>
-              </CardHeader>
-              <Separator />
-              <ScrollArea className="h-[calc(100vh-260px)]">
-                <CardContent className="pt-4">
-                  {artifact ? (
-                    <div className="prose prose-sm prose-invert max-w-none">
-                      <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {artifact}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-muted-foreground">
-                      <div className="text-center">
-                        <PenLine className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                        <p className="text-sm">
-                          Artifact will appear here as it's generated...
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </ScrollArea>
-            </Card>
-          </div>
+          {/* Separator between progress and artifact */}
+          {artifact && <Separator className="my-6" />}
+
+          {/* Artifact Section */}
+          {artifact && (
+            <div className="space-y-3">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">
+                {artifactTitle || "Outreach Drafts"}
+              </div>
+              <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                {artifact}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function EventItem({ event, isActive }: { event: EventChunk; isActive: boolean }) {
-  if (event.type === "subflow") {
-    const subflow = event as SubflowChunk;
-    const Icon = SUBFLOW_ICONS[subflow.name as keyof typeof SUBFLOW_ICONS] || Search;
-    const isStarted = subflow.status === "started";
-    const isDone = subflow.status === "done";
+function SubflowRow({ group }: { group: SubflowGroup }) {
+  const [expanded, setExpanded] = useState(group.status === "active");
 
-    return (
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5">
-          {isStarted && isActive ? (
-            <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
-          ) : isDone ? (
-            <CheckCircle2 className="h-4 w-4 text-green-400" />
-          ) : (
-            <Icon className="h-4 w-4 text-muted-foreground" />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p
-            className={`text-sm font-medium ${
-              isDone ? "text-green-400" : isActive ? "text-blue-400" : ""
-            }`}
-          >
-            {subflow.label}
-          </p>
-        </div>
-      </div>
-    );
+  // Auto-expand active subflows
+  if (group.status === "active" && !expanded) {
+    setExpanded(true);
   }
 
+  // Auto-collapse done subflows (unless manually expanded)
+  const hasChildEvents = group.events.length > 0;
+  const Icon = SUBFLOW_ICONS[group.name as keyof typeof SUBFLOW_ICONS] || Search;
+
+  return (
+    <div className="space-y-1">
+      {/* Subflow header row */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 py-2 w-full hover:bg-muted/50 rounded px-2 -mx-2 transition-colors"
+        disabled={!hasChildEvents}
+      >
+        {/* Status icon */}
+        <div className="flex-shrink-0">
+          {group.status === "pending" && (
+            <Circle className="h-4 w-4 text-muted-foreground" />
+          )}
+          {group.status === "active" && (
+            <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+          )}
+          {group.status === "done" && (
+            <CheckCircle2 className="h-4 w-4 text-green-400" />
+          )}
+        </div>
+
+        {/* Label */}
+        <div
+          className={`flex-1 text-left text-sm ${
+            group.status === "done"
+              ? "text-green-400"
+              : group.status === "active"
+              ? "text-blue-400"
+              : "text-muted-foreground"
+          }`}
+        >
+          {group.label}
+        </div>
+
+        {/* Expand/collapse chevron */}
+        {hasChildEvents && (
+          <div className="flex-shrink-0">
+            {expanded ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+        )}
+      </button>
+
+      {/* Child events (tool calls and results) */}
+      {expanded && hasChildEvents && (
+        <div className="pl-6 space-y-1">
+          {group.events.map((event, idx) => (
+            <ChildEvent key={idx} event={event} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChildEvent({ event }: { event: EventChunk }) {
   if (event.type === "tool_call") {
     const toolCall = event as ToolCallChunk;
     return (
-      <div className="flex items-start gap-3 pl-7">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs text-muted-foreground">
-            <span className="font-mono">{toolCall.tool}</span>
-            {Object.keys(toolCall.input).length > 0 && (
-              <span className="ml-1">
-                ({Object.values(toolCall.input)[0]?.toString().slice(0, 30)}
-                {Object.values(toolCall.input)[0]?.toString().length > 30 ? "..." : ""}
-                )
-              </span>
-            )}
-          </p>
-        </div>
+      <div className="flex items-start gap-2 py-1">
+        <ArrowRight className="h-3 w-3 text-muted-foreground mt-0.5 flex-shrink-0" />
+        <p className="text-xs text-muted-foreground">
+          <span className="font-mono">{toolCall.tool}</span>
+          {Object.keys(toolCall.input).length > 0 && (
+            <span className="ml-1">
+              : {Object.values(toolCall.input)[0]?.toString().slice(0, 40)}
+              {Object.values(toolCall.input)[0]?.toString().length > 40 ? "..." : ""}
+            </span>
+          )}
+        </p>
       </div>
     );
   }
@@ -226,14 +234,46 @@ function EventItem({ event, isActive }: { event: EventChunk; isActive: boolean }
   if (event.type === "tool_result") {
     const toolResult = event as ToolResultChunk;
     return (
-      <div className="flex items-start gap-3 pl-7">
-        <CheckCircle2 className="h-3 w-3 text-green-400 mt-0.5" />
-        <div className="flex-1 min-w-0">
-          <p className="text-xs text-muted-foreground">{toolResult.preview}</p>
-        </div>
+      <div className="flex items-start gap-2 py-1">
+        <CheckCircle2 className="h-3 w-3 text-green-400 mt-0.5 flex-shrink-0" />
+        <p className="text-xs text-green-400/80">{toolResult.preview}</p>
       </div>
     );
   }
 
   return null;
+}
+
+function groupEventsBySubflow(
+  events: EventChunk[],
+  activeSubflow: string | null
+): SubflowGroup[] {
+  const groups: SubflowGroup[] = [];
+  let currentGroup: SubflowGroup | null = null;
+
+  for (const event of events) {
+    if (event.type === "subflow") {
+      const subflow = event as SubflowChunk;
+
+      if (subflow.status === "started") {
+        // Start a new group
+        currentGroup = {
+          name: subflow.name,
+          label: subflow.label,
+          status: activeSubflow === subflow.name ? "active" : "done",
+          events: [],
+        };
+        groups.push(currentGroup);
+      } else if (subflow.status === "done" && currentGroup) {
+        // Mark the current group as done
+        currentGroup.status = "done";
+        currentGroup = null;
+      }
+    } else if (currentGroup && (event.type === "tool_call" || event.type === "tool_result")) {
+      // Add child events to the current group
+      currentGroup.events.push(event);
+    }
+  }
+
+  return groups;
 }

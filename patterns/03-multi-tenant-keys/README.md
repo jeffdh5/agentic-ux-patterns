@@ -38,6 +38,34 @@ This pattern demonstrates **passwordless authentication** (GCIP magic links), **
 4. **Per-user rate limits**: Google enforces quotas per key, naturally isolating tenants.
 5. **Extensible**: Store model preference in Firestore (see "Extend this" below).
 
+## How It Works: `context_provider` Pattern
+
+This pattern uses Genkit's **`context_provider`** to inject server-side auth context into flows—the idiomatic way to handle authentication and secrets in Genkit flows.
+
+**Key concept**: The `context_provider` receives a `RequestData` object (with `.headers` dict), verifies the Firebase JWT, fetches the API key from Secret Manager, and returns a dict that becomes available in the flow via `ctx.context`.
+
+```python
+async def auth_provider(req: RequestData) -> dict:
+    """Verify Firebase JWT and inject api_key from Secret Manager into flow context."""
+    token = req.headers.get("authorization", "").replace("Bearer ", "")
+    uid = firebase_auth.verify_id_token(token)["uid"]
+    return {"uid": uid, "api_key": fetch_key(uid)}
+
+@app.post("/flow/chat", response_model=None)
+@genkit_fastapi_handler(ai, context_provider=auth_provider)
+@ai.flow()
+async def chat(input: ChatInput, ctx: ActionRunContext) -> str:
+    api_key = ctx.context["api_key"]  # injected by auth_provider, never from client
+    sr = ai.generate_stream(prompt=input.message, config={"api_key": api_key})
+    # ... stream response
+```
+
+**Why this matters**:
+- **Security**: API keys are fetched server-side and never exposed to the client or accepted from request bodies.
+- **Separation of concerns**: Auth logic lives in the provider, flow logic stays clean.
+- **Type safety**: The flow's input model (`ChatInput`) only includes business data (`message`), not auth details.
+- **Reusability**: The same `auth_provider` can be reused across multiple flows.
+
 ## The Pattern
 
 ### Store Key (Backend)
@@ -72,22 +100,26 @@ def store_api_key(uid: str, api_key: str):
 ### Chat Endpoint (Backend)
 
 ```python
-@app.post("/flow/chat")
-async def chat(request: ChatRequest, uid: str = Depends(verify_firebase_token)):
-    # 1. Fetch user's key from Secret Manager
-    api_key = fetch_api_key(uid)
+async def auth_provider(req: RequestData) -> dict:
+    """Verify Firebase JWT and inject api_key from Secret Manager into flow context."""
+    token = req.headers.get("authorization", "").replace("Bearer ", "")
+    uid = firebase_auth.verify_id_token(token)["uid"]
+    return {"uid": uid, "api_key": fetch_api_key(uid)}
 
-    # 2. Stream with per-request key override
-    async def generate():
-        full_text = ""
-        stream = ai.generate_stream(request.message, config={"api_key": api_key})
-        for chunk in stream:
-            chunk_text = chunk.text
-            full_text += chunk_text
-            yield f'data: {{"message": "{chunk_text}"}}\n\n'
-        yield f'data: {{"result": "{full_text}"}}\n\n'
+@app.post("/flow/chat", response_model=None)
+@genkit_fastapi_handler(ai, context_provider=auth_provider)
+@ai.flow()
+async def chat(input: ChatInput, ctx: ActionRunContext) -> str:
+    # API key is injected via context_provider, never from client
+    api_key = ctx.context["api_key"]
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    sr = ai.generate_stream(prompt=input.message, config={"api_key": api_key})
+    full = ""
+    async for chunk in sr.stream:
+        if chunk.text:
+            ctx.send_chunk(chunk.text)  # auto-formatted as SSE by genkit_fastapi_handler
+            full += chunk.text
+    return full
 ```
 
 ### Frontend Flow

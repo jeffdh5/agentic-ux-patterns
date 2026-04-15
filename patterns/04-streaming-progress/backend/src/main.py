@@ -67,7 +67,7 @@ async def research(body: ResearchInput):
             label=f"Found {len(leads)} companies",
         )
 
-        # Subflow 2: enrich_profiles
+        # Subflow 2: enrich_profiles (parent flow)
         yield chunk(
             type="subflow",
             name="enrich_profiles",
@@ -75,12 +75,28 @@ async def research(body: ResearchInput):
             label="Enriching profiles...",
         )
         for lead in leads[:3]:
+            # Child subflow for each lead — note parent field
+            lead_key = lead.lower().replace(" ", "_")
+            yield chunk(
+                type="subflow",
+                name=f"enrich_{lead_key}",
+                parent="enrich_profiles",
+                status="started",
+                label=f"Enriching {lead}...",
+            )
             yield chunk(type="tool_call", tool="enrich", input={"company": lead})
             await asyncio.sleep(0.3)
             yield chunk(
                 type="tool_result",
                 tool="enrich",
                 preview=f"{lead}: 45 employees, $8M raised, Series A",
+            )
+            yield chunk(
+                type="subflow",
+                name=f"enrich_{lead_key}",
+                parent="enrich_profiles",
+                status="done",
+                label=f"{lead} enriched",
             )
         yield chunk(
             type="subflow", name="enrich_profiles", status="done", label="Profiles enriched"

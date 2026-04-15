@@ -37,6 +37,7 @@ interface SubflowGroup {
   label: string;
   status: "pending" | "active" | "done";
   events: EventChunk[];
+  children: SubflowGroup[];
 }
 
 export default function Home() {
@@ -150,8 +151,8 @@ function SubflowRow({ group }: { group: SubflowGroup }) {
     setExpanded(true);
   }
 
-  // Auto-collapse done subflows (unless manually expanded)
-  const hasChildEvents = group.events.length > 0;
+  // Has content if there are child events OR child subflows
+  const hasContent = group.events.length > 0 || group.children.length > 0;
   const Icon = SUBFLOW_ICONS[group.name as keyof typeof SUBFLOW_ICONS] || Search;
 
   return (
@@ -160,7 +161,7 @@ function SubflowRow({ group }: { group: SubflowGroup }) {
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-2 py-2 w-full hover:bg-muted/50 rounded px-2 -mx-2 transition-colors"
-        disabled={!hasChildEvents}
+        disabled={!hasContent}
       >
         {/* Status icon */}
         <div className="flex-shrink-0">
@@ -189,7 +190,7 @@ function SubflowRow({ group }: { group: SubflowGroup }) {
         </div>
 
         {/* Expand/collapse chevron */}
-        {hasChildEvents && (
+        {hasContent && (
           <div className="flex-shrink-0">
             {expanded ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -200,9 +201,14 @@ function SubflowRow({ group }: { group: SubflowGroup }) {
         )}
       </button>
 
-      {/* Child events (tool calls and results) */}
-      {expanded && hasChildEvents && (
+      {/* Child content (tool calls, results, and child subflows) */}
+      {expanded && hasContent && (
         <div className="pl-6 space-y-1">
+          {/* Child subflows — recursive rendering */}
+          {group.children.map((child, idx) => (
+            <SubflowRow key={idx} group={child} />
+          ))}
+          {/* Child events (tool calls and results) */}
           {group.events.map((event, idx) => (
             <ChildEvent key={idx} event={event} />
           ))}
@@ -248,32 +254,58 @@ function groupEventsBySubflow(
   events: EventChunk[],
   activeSubflow: string | null
 ): SubflowGroup[] {
-  const groups: SubflowGroup[] = [];
-  let currentGroup: SubflowGroup | null = null;
+  // Build a map of all subflows by name
+  const groupMap = new Map<string, SubflowGroup>();
+  const topLevelGroups: SubflowGroup[] = [];
+  let activeGroupName: string | null = null;
 
   for (const event of events) {
     if (event.type === "subflow") {
       const subflow = event as SubflowChunk;
 
       if (subflow.status === "started") {
-        // Start a new group
-        currentGroup = {
+        // Create a new group
+        const group: SubflowGroup = {
           name: subflow.name,
           label: subflow.label,
-          status: activeSubflow === subflow.name ? "active" : "done",
+          status: activeSubflow === subflow.name ? "active" : "pending",
           events: [],
+          children: [],
         };
-        groups.push(currentGroup);
-      } else if (subflow.status === "done" && currentGroup) {
-        // Mark the current group as done
-        currentGroup.status = "done";
-        currentGroup = null;
+        groupMap.set(subflow.name, group);
+
+        // If it has no parent, it's top-level
+        if (!subflow.parent) {
+          topLevelGroups.push(group);
+        } else {
+          // Add to parent's children
+          const parent = groupMap.get(subflow.parent);
+          if (parent) {
+            parent.children.push(group);
+          }
+        }
+
+        // Track the active group for adding tool events
+        activeGroupName = subflow.name;
+      } else if (subflow.status === "done") {
+        // Mark the group as done
+        const group = groupMap.get(subflow.name);
+        if (group) {
+          group.status = "done";
+        }
+        // If this was the active group, clear it
+        if (activeGroupName === subflow.name) {
+          activeGroupName = null;
+        }
       }
-    } else if (currentGroup && (event.type === "tool_call" || event.type === "tool_result")) {
-      // Add child events to the current group
-      currentGroup.events.push(event);
+    } else if (activeGroupName && (event.type === "tool_call" || event.type === "tool_result")) {
+      // Add child events to the currently active group
+      const group = groupMap.get(activeGroupName);
+      if (group) {
+        group.events.push(event);
+      }
     }
   }
 
-  return groups;
+  return topLevelGroups;
 }

@@ -16,6 +16,7 @@ export interface SubflowChunk extends BaseChunk {
   name: string;
   status: "started" | "done";
   label: string;
+  parent?: string;
 }
 
 export interface ToolCallChunk extends BaseChunk {

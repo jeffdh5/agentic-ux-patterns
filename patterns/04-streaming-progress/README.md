@@ -1,173 +1,139 @@
-# Streaming Agent Progress — Live Updates for App-Controlled Flows
+# Streaming Agent Progress — Live Updates for Long-running Agentic Flows
 
-Background agents hide everything until done. This pattern is the opposite.
+Any sufficiently complex AI feature eventually becomes a multi-step process. Fetching, enriching, analyzing, generating. Each step takes time. Each step has sub-steps. Your users are staring at a spinner.
 
-When YOUR code controls the flow sequence (not the model), you can emit precise typed chunks at each step. The user sees exactly what the agent is doing, not a spinner.
+This pattern solves that. It gives every long-running app-controlled flow a live window — a recursive, streaming UI that shows exactly what the agent is doing at every level of nesting, updates in real time, and requires zero frontend changes when your flow evolves.
 
-## The Pattern
+---
 
-This pattern demonstrates how to stream typed progress updates from a multi-step agent workflow. Instead of showing a generic loading spinner, it surfaces what's happening at each stage through structured event chunks.
+## The core idea
 
-### Chunk Taxonomy
+Your flow emits typed chunks over SSE. The frontend builds a tree from those chunks and renders it recursively. The UI contract is a single JSON convention — not a framework, not a dependency. Own it, modify it, ship it.
 
-The backend emits seven types of SSE chunks:
-
-```typescript
-// 1. Subflow lifecycle — marks major orchestration steps
-{"type": "subflow", "name": "search_leads", "status": "started", "label": "Searching for leads..."}
+```
+{"type": "subflow", "name": "search_leads", "status": "started", "label": "Searching..."}
+{"type": "tool_call", "tool": "web_search", "input": {...}}
+{"type": "tool_result", "tool": "web_search", "preview": "Found 8 companies"}
 {"type": "subflow", "name": "search_leads", "status": "done", "label": "Found 8 companies"}
-
-// 2. Tool calls — discrete actions within a subflow
-{"type": "tool_call", "tool": "web_search", "input": {"query": "B2B SaaS founders Chicago Series A 2024"}}
-
-// 3. Tool results — outcomes of tool executions
-{"type": "tool_result", "tool": "web_search", "preview": "Found 8 matching companies"}
-
-// 4. Artifact streaming — the durable output, streamed incrementally
-{"type": "artifact", "id": "leads-report", "title": "Lead Report", "content": "## Acme Corp\n", "mode": "append"}
-{"type": "artifact", "id": "leads-report", "title": "Lead Report", "content": "**Score: 92/100**\n", "mode": "append"}
-
-// 5. Done signal
+{"type": "subflow", "name": "enrich_acme", "parent": "enrich_profiles", "status": "started", "label": "Looking up Acme Corp..."}
+{"type": "artifact", "id": "output", "title": "Results", "content": "## Acme Corp\n", "mode": "append"}
 {"type": "done"}
 ```
 
-**Why typed chunks beat plain text:**
-- Frontend can render different UI for different event types (timeline vs artifact)
-- Events can be filtered, grouped, or replayed
-- Type safety across the stack
-- Clear separation between process state (subflows, tools) and output (artifact)
+The `parent` field is the only thing that makes nesting work. A chunk with no parent is a root step. A chunk with `parent: "enrich_profiles"` attaches to that node. The UI recurses as deep as your flow goes — no depth limit, no UI changes required when you add new steps or restructure your flow.
 
-**SSE format:** Each chunk is sent as `data: {json}\n\n`
+---
 
-## Two-Panel UX
+## The UX
 
-The UI separates ephemeral process state from durable output:
+**Progress section (top)** — collapsible, Claude.ai style:
+- One row per subflow: pending → active (spinner) → done (checkmark)
+- Click to expand: reveals tool calls, tool results, and child subflows
+- Child subflows render identically to parent subflows — same expand/collapse, just indented
+- Active subflow stays expanded; completed subflows collapse automatically
 
-**Left Panel (Event Timeline):**
-- Shows what's happening right now
-- Subflows: started → done lifecycle with spinners/checkmarks
-- Tool calls: indented under their parent subflow
-- Tool results: preview of what each tool returned
-- Auto-scrolls as new events arrive
+**Artifact section (below)** — the primary output:
+- Streams in as `artifact` chunks arrive
+- This is what the user reads; progress is context
 
-**Right Panel (Artifact):**
-- Shows the final deliverable as it's being created
-- Streams in character-by-character (or chunk-by-chunk)
-- Persists after the flow completes
-- This is what the user came for
+---
 
-**Why separate them?** The timeline is diagnostic — it helps users understand what's taking time and builds trust. The artifact is the actual result. Different purposes, different UI treatment.
+## Where this applies
 
-## Subflows vs Tool Calls
+LeadFlow (the demo) is just one instance. The pattern fits any long-running app-controlled flow:
 
-**Subflows** are YOUR orchestration steps. You decide when they start and end. They represent logical phases of work:
-- `search_leads` — find potential companies
-- `enrich_profiles` — gather detailed info
-- `score_leads` — rank by fit
-- `draft_outreach` — generate personalized messages
+| Domain | Top-level steps | Example child steps |
+|--------|----------------|---------------------|
+| Lead generation | Search → Enrich → Score → Draft | Enrich Acme Corp, Enrich Beacon AI |
+| Code review | Analyze PR → Review files → Summarize | Review auth.py, Review api.py |
+| Document processing | Ingest → Extract → Summarize → Compile | Summarize section 1, Summarize section 2 |
+| Travel planning | Flights → Hotels → Availability → Itinerary | Check Marriott, Check Hilton |
+| Data pipeline | Fetch → Validate → Transform → Load | Transform users table, Transform orders table |
 
-You control the timing, sequence, and labels. This is app-controlled flow.
+Same chunk shape. Same parent convention. Same recursive UI. Zero frontend changes across all of them.
 
-**Tool calls** are discrete actions within a subflow. They can be:
-- Actual LLM tool calls (if you use `ai.generate()` with tools)
-- Simulated tool calls (hardcoded in your flow for demonstration)
-- Real API calls to external services
+---
 
-The key: subflows are orchestration boundaries. Tool calls are execution steps.
-
-Both surface to the user, but differently:
-- Subflows get prominent icons, status badges, and position in the timeline
-- Tool calls are nested details, shown in muted text
-
-## Run Locally
-
-### Backend
-
-```bash
-cd patterns/04-streaming-progress/backend
-uv venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-uv pip install -e .
-export GOOGLE_GENAI_API_KEY="your-key-here"
-python src/main.py
-```
-
-Backend runs on `http://localhost:8000`
-
-### Frontend
-
-```bash
-cd patterns/04-streaming-progress/frontend
-npm install
-npm run dev
-```
-
-Frontend runs on `http://localhost:3000`
-
-### Usage
-
-1. Open `http://localhost:3000`
-2. Enter a target customer description (e.g., "B2B SaaS founders in Chicago who raised Series A in 2024")
-3. Click "Find Leads"
-4. Watch the timeline populate on the left as each subflow executes
-5. See the outreach drafts stream in on the right
-
-## Extend This
-
-### Add Real Tool Integrations
-
-Replace the simulated tool calls with real APIs:
-- [Apify](https://apify.com/) for LinkedIn scraping
-- [Apollo.io](https://www.apollo.io/) for contact enrichment
-- [Clearbit](https://clearbit.com/) for company data
-
-### Add Cancellation
-
-Use `AbortController` to let users stop a running flow:
-
-```typescript
-const controller = new AbortController();
-fetch("http://localhost:8000/flow/research", {
-  signal: controller.signal,
-  // ...
-});
-
-// Later:
-controller.abort();
-```
-
-### Case 2: Model-Controlled Flow
-
-This pattern shows app-controlled flow (you write the sequence). For model-controlled flow (the LLM decides what tools to call), replace the deterministic sequence with:
+## The pattern — chunk taxonomy
 
 ```python
-@ai.prompt
-def research_agent(target: str):
-    """
-    You are a lead research agent. Given a target customer description,
-    search for leads, enrich profiles, score them, and draft outreach.
+def chunk(**kwargs) -> str:
+    return f"data: {json.dumps(kwargs)}\n\n"
 
-    Target: {target}
-    """
+# Start a top-level step
+yield chunk(type="subflow", name="search_leads", status="started", label="Searching for leads...")
 
-# Then stream the agent's tool calls
-sr = ai.generate_stream(prompt=research_agent, tools=[web_search, enrich, score])
+# Tool call within a step
+yield chunk(type="tool_call", tool="web_search", input={"query": "..."})
+yield chunk(type="tool_result", tool="web_search", preview="Found 8 companies")
+
+# Finish a step
+yield chunk(type="subflow", name="search_leads", status="done", label="Found 8 companies")
+
+# Child subflow — attach to parent with parent field
+yield chunk(type="subflow", name="enrich_acme", parent="enrich_profiles", status="started", label="Looking up Acme Corp...")
+
+# Stream artifact content
+yield chunk(type="artifact", id="output", title="Results", content="## Acme\n", mode="append")
+
+# Signal completion
+yield chunk(type="done")
 ```
 
-You'll need to adapt the chunk emission to fire on LLM tool call events rather than your hardcoded sequence.
+The SDK is unaware of this structure. `ctx.send_chunk()` passes any dict through untouched. The parent/child relationship is your convention, enforced by your flow code, rendered by your UI.
 
-## Key Takeaways
+---
 
-1. **Typed chunks > plain text** — structure enables better UX
-2. **Timeline ≠ Artifact** — process state and output are different things
-3. **Subflows = orchestration, Tools = execution** — both matter to users
-4. **App-controlled flows can be precise** — when you know the sequence, surface it
-5. **SSE is simple** — `data: {json}\n\n` is all you need
+## Recursive subflows
 
-This pattern works best when:
-- You control the flow sequence (not the model)
-- The flow has 3+ distinct steps
-- Users care about intermediate progress (not just the final result)
-- You want to build trust by showing your work
+The frontend builds a tree, not a flat list. `SubflowRow` renders its children recursively — each child is visually identical to its parent, just indented one level. This means your flow hierarchy maps directly to your UI hierarchy, always, regardless of depth.
 
-For model-controlled flows with unpredictable tool sequences, adapt the chunk emission logic but keep the two-panel UX concept.
+```
+research_flow
+├── search_leads          ✓ Found 8 companies
+├── enrich_profiles       ✓ Profiles enriched
+│   ├── enrich_acme       ✓ Series A, 45 employees
+│   ├── enrich_beacon     ✓ Series A, 30 employees
+│   └── enrich_cascade    ✓ Series B, 80 employees
+├── score_leads           ✓ Leads ranked
+└── draft_outreach        ● Drafting... (active)
+```
+
+Add a new subflow tomorrow — emit the chunk with the right `parent`, done. No UI changes ever.
+
+---
+
+## Run locally
+
+**Backend:**
+```bash
+cd backend
+export GOOGLE_API_KEY="your-key"
+uv run python src/main.py
+```
+
+**Frontend:**
+```bash
+cd frontend
+npm install && npm run dev
+```
+
+Open http://localhost:3000, describe a target customer, watch the flow run.
+
+---
+
+## Extend this
+
+**Add real tools:** replace mock `asyncio.sleep` with actual API calls — Apollo.io for enrichment, Apify for scraping, LinkedIn for profiles.
+
+**Add cancellation:** pass an `AbortController` signal to the fetch call. On abort, the backend detects a disconnected client and stops the generator.
+
+**Add case 2 (model controls the flow):** replace the deterministic sequence with `ai.generate()` + tools. Capture tool calls from the model response and emit them as chunks. The UI renders exactly the same — it doesn't care who decided to call the tool.
+
+---
+
+## Point your agent
+
+> "Look at https://github.com/jeffdh5/agentic-ux-patterns/tree/main/patterns/04-streaming-progress and add streaming progress to my [flow name] flow. My steps are: [step 1], [step 2], [step 3]. Step 2 has sub-steps for each [item]."
+
+The agent reads the chunk taxonomy, understands the parent convention, and wires it into your specific flow.

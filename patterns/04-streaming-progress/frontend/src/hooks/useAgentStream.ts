@@ -1,39 +1,90 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 
-interface AgentStreamState {
-  status: string;
-  step: number;
-  totalSteps: number;
-  output: string;
-  loading: boolean;
-  error: string | null;
+export type ChunkType =
+  | "subflow"
+  | "tool_call"
+  | "tool_result"
+  | "artifact"
+  | "done";
+
+export interface BaseChunk {
+  type: ChunkType;
 }
 
-export function useAgentStream(apiEndpoint: string) {
+export interface SubflowChunk extends BaseChunk {
+  type: "subflow";
+  name: string;
+  status: "started" | "done";
+  label: string;
+}
+
+export interface ToolCallChunk extends BaseChunk {
+  type: "tool_call";
+  tool: string;
+  input: Record<string, any>;
+}
+
+export interface ToolResultChunk extends BaseChunk {
+  type: "tool_result";
+  tool: string;
+  preview: string;
+}
+
+export interface ArtifactChunk extends BaseChunk {
+  type: "artifact";
+  id: string;
+  title: string;
+  content: string;
+  mode: "append" | "replace";
+}
+
+export interface DoneChunk extends BaseChunk {
+  type: "done";
+}
+
+export type EventChunk =
+  | SubflowChunk
+  | ToolCallChunk
+  | ToolResultChunk
+  | ArtifactChunk
+  | DoneChunk;
+
+export interface AgentStreamState {
+  events: EventChunk[];
+  artifact: string;
+  artifactTitle: string;
+  activeSubflow: string | null;
+  done: boolean;
+  loading: boolean;
+}
+
+export function useAgentStream() {
   const [state, setState] = useState<AgentStreamState>({
-    status: "",
-    step: 0,
-    totalSteps: 0,
-    output: "",
+    events: [],
+    artifact: "",
+    artifactTitle: "",
+    activeSubflow: null,
+    done: false,
     loading: false,
-    error: null,
   });
 
-  const submit = async (topic: string) => {
+  const submit = useCallback(async (target: string) => {
     setState({
-      status: "",
-      step: 0,
-      totalSteps: 0,
-      output: "",
+      events: [],
+      artifact: "",
+      artifactTitle: "",
+      activeSubflow: null,
+      done: false,
       loading: true,
-      error: null,
     });
 
     try {
-      const response = await fetch(apiEndpoint, {
+      const response = await fetch("http://localhost:8000/flow/research", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ target }),
       });
 
       if (!response.ok) {
@@ -41,57 +92,72 @@ export function useAgentStream(apiEndpoint: string) {
       }
 
       const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
       if (!reader) {
         throw new Error("No response body");
       }
 
+      const decoder = new TextDecoder();
+      let buffer = "";
+
       while (true) {
         const { done, value } = await reader.read();
+
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.slice(6));
+            const data = line.slice(6);
+            if (data.trim()) {
+              try {
+                const chunk = JSON.parse(data) as EventChunk;
 
-            if (data.type === "status") {
-              setState((prev) => ({
-                ...prev,
-                status: data.status,
-                step: data.step,
-                totalSteps: data.total,
-              }));
-            } else if (data.type === "message") {
-              setState((prev) => ({
-                ...prev,
-                output: prev.output + data.message,
-              }));
-            } else if (data.type === "done") {
-              setState((prev) => ({ ...prev, loading: false }));
+                setState((prev) => {
+                  const newState = { ...prev };
+                  newState.events = [...prev.events, chunk];
+
+                  // Update active subflow
+                  if (chunk.type === "subflow") {
+                    if (chunk.status === "started") {
+                      newState.activeSubflow = chunk.name;
+                    } else if (chunk.status === "done") {
+                      newState.activeSubflow = null;
+                    }
+                  }
+
+                  // Handle artifact chunks
+                  if (chunk.type === "artifact") {
+                    newState.artifactTitle = chunk.title;
+                    if (chunk.mode === "append") {
+                      newState.artifact += chunk.content;
+                    } else {
+                      newState.artifact = chunk.content;
+                    }
+                  }
+
+                  // Handle done
+                  if (chunk.type === "done") {
+                    newState.done = true;
+                    newState.loading = false;
+                  }
+
+                  return newState;
+                });
+              } catch (e) {
+                console.error("Failed to parse chunk:", data, e);
+              }
             }
           }
         }
       }
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: err instanceof Error ? err.message : "Unknown error",
-      }));
+    } catch (error) {
+      console.error("Stream error:", error);
+      setState((prev) => ({ ...prev, loading: false }));
     }
-  };
+  }, []);
 
-  return {
-    status: state.status,
-    step: state.step,
-    totalSteps: state.totalSteps,
-    output: state.output,
-    loading: state.loading,
-    error: state.error,
-    submit,
-  };
+  return { ...state, submit };
 }

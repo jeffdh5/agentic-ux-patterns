@@ -1,135 +1,83 @@
-# Streaming Agent Progress — Live Status from Multi-step Flows
+# Streaming Agent Progress — Live Updates for App-Controlled Flows
 
-Users abandon spinners. They watch progress bars.
+Background agents hide everything until done. This pattern is the opposite.
 
-When you click "Find Leads" in LeadFlow, the agent runs 4 steps: search for leads, analyze profiles, draft outreach, and finalize. Instead of showing a spinner for 10 seconds, you see live progress—each step lights up as the agent works through it, and text streams in real-time below. You know exactly what's happening and how far along it is.
-
-This pattern shows how to stream two types of chunks from a multi-step agentic flow: **status events** (what step the agent is on) and **text tokens** (model output as it generates). The frontend renders them differently—status events update a step indicator, text tokens append to the output.
+When YOUR code controls the flow sequence (not the model), you can emit precise typed chunks at each step. The user sees exactly what the agent is doing, not a spinner.
 
 ## The Pattern
 
-### Backend: Two chunk types
+This pattern demonstrates how to stream typed progress updates from a multi-step agent workflow. Instead of showing a generic loading spinner, it surfaces what's happening at each stage through structured event chunks.
 
-Your FastAPI endpoint yields Server-Sent Events (SSE) with two distinct chunk types:
+### Chunk Taxonomy
 
-```python
-# Status chunk: "I'm now on step 2 of 4"
-yield f"data: {json.dumps({'type': 'status', 'status': '📊 Analyzing profiles...', 'step': 2, 'total': 4})}\n\n"
+The backend emits seven types of SSE chunks:
 
-# Message chunk: streaming text from the model
-yield f"data: {json.dumps({'type': 'message', 'message': 'token'})}\n\n"
+```typescript
+// 1. Subflow lifecycle — marks major orchestration steps
+{"type": "subflow", "name": "search_leads", "status": "started", "label": "Searching for leads..."}
+{"type": "subflow", "name": "search_leads", "status": "done", "label": "Found 8 companies"}
 
-# Done chunk: flow complete
-yield f"data: {json.dumps({'type': 'done'})}\n\n"
+// 2. Tool calls — discrete actions within a subflow
+{"type": "tool_call", "tool": "web_search", "input": {"query": "B2B SaaS founders Chicago Series A 2024"}}
+
+// 3. Tool results — outcomes of tool executions
+{"type": "tool_result", "tool": "web_search", "preview": "Found 8 matching companies"}
+
+// 4. Artifact streaming — the durable output, streamed incrementally
+{"type": "artifact", "id": "leads-report", "title": "Lead Report", "content": "## Acme Corp\n", "mode": "append"}
+{"type": "artifact", "id": "leads-report", "title": "Lead Report", "content": "**Score: 92/100**\n", "mode": "append"}
+
+// 5. Done signal
+{"type": "done"}
 ```
 
-The flow in `backend/src/main.py:27-62` simulates a 4-step agent:
+**Why typed chunks beat plain text:**
+- Frontend can render different UI for different event types (timeline vs artifact)
+- Events can be filtered, grouped, or replayed
+- Type safety across the stack
+- Clear separation between process state (subflows, tools) and output (artifact)
 
-```python
-async def research_flow(topic: str) -> AsyncGenerator[str, None]:
-    total_steps = 4
+**SSE format:** Each chunk is sent as `data: {json}\n\n`
 
-    # Step 1: Search
-    yield f"data: {json.dumps({'type': 'status', 'status': '🔍 Searching...', 'step': 1, 'total': total_steps})}\n\n"
-    await asyncio.sleep(0.5)  # simulate work
-    for chunk in ["Found ", "15 ", "leads.\n"]:
-        yield f"data: {json.dumps({'type': 'message', 'message': chunk})}\n\n"
+## Two-Panel UX
 
-    # Step 2: Analyze
-    yield f"data: {json.dumps({'type': 'status', 'status': '📊 Analyzing...', 'step': 2, 'total': total_steps})}\n\n"
-    # ... more chunks
+The UI separates ephemeral process state from durable output:
 
-    # Step 3: Draft (real AI streaming)
-    yield f"data: {json.dumps({'type': 'status', 'status': '✍️ Drafting...', 'step': 3, 'total': total_steps})}\n\n"
-    async for chunk in ai.generate_stream(prompt):
-        yield f"data: {json.dumps({'type': 'message', 'message': chunk.text})}\n\n"
+**Left Panel (Event Timeline):**
+- Shows what's happening right now
+- Subflows: started → done lifecycle with spinners/checkmarks
+- Tool calls: indented under their parent subflow
+- Tool results: preview of what each tool returned
+- Auto-scrolls as new events arrive
 
-    # Step 4: Done
-    yield f"data: {json.dumps({'type': 'status', 'status': '✅ Done', 'step': 4, 'total': total_steps})}\n\n"
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-```
+**Right Panel (Artifact):**
+- Shows the final deliverable as it's being created
+- Streams in character-by-character (or chunk-by-chunk)
+- Persists after the flow completes
+- This is what the user came for
 
-### Frontend: Hook parses both chunk types
+**Why separate them?** The timeline is diagnostic — it helps users understand what's taking time and builds trust. The artifact is the actual result. Different purposes, different UI treatment.
 
-The `useAgentStream` hook in `frontend/src/hooks/useAgentStream.ts:15-94` reads the SSE stream and updates state based on chunk type:
+## Subflows vs Tool Calls
 
-```ts
-const lines = chunk.split("\n");
-for (const line of lines) {
-  if (line.startsWith("data: ")) {
-    const data = JSON.parse(line.slice(6));
+**Subflows** are YOUR orchestration steps. You decide when they start and end. They represent logical phases of work:
+- `search_leads` — find potential companies
+- `enrich_profiles` — gather detailed info
+- `score_leads` — rank by fit
+- `draft_outreach` — generate personalized messages
 
-    if (data.type === "status") {
-      setState((prev) => ({
-        ...prev,
-        status: data.status,
-        step: data.step,
-        totalSteps: data.total,
-      }));
-    } else if (data.type === "message") {
-      setState((prev) => ({
-        ...prev,
-        output: prev.output + data.message,
-      }));
-    } else if (data.type === "done") {
-      setState((prev) => ({ ...prev, loading: false }));
-    }
-  }
-}
-```
+You control the timing, sequence, and labels. This is app-controlled flow.
 
-### Frontend: UI renders steps and output
+**Tool calls** are discrete actions within a subflow. They can be:
+- Actual LLM tool calls (if you use `ai.generate()` with tools)
+- Simulated tool calls (hardcoded in your flow for demonstration)
+- Real API calls to external services
 
-The page in `frontend/src/app/page.tsx:45-85` renders a vertical step indicator:
+The key: subflows are orchestration boundaries. Tool calls are execution steps.
 
-- **✓ Completed** (green): steps before current step
-- **→ Current** (blue, animated): the step the agent is currently on, with the live status text
-- **○ Pending** (gray): steps not yet started
-
-Below the steps, the output text streams in as `message` chunks arrive.
-
-## Why This Matters
-
-**Trust and perceived performance.** When users see a spinner, they wonder if something broke. When they see "Step 2 of 4: Analyzing profiles...", they know it's working and how long it might take.
-
-**Transparency builds confidence.** Users are more patient when they understand what's happening. A progress indicator turns anxiety into anticipation.
-
-**Better UX for long-running tasks.** Multi-step agent flows can take 10-30 seconds. Without progress indication, users abandon the page. With live status, they stick around.
-
-## The Chunk Shape
-
-All chunks follow the SSE format: `data: <JSON>\n\n`
-
-### Status chunk
-```json
-{
-  "type": "status",
-  "status": "📊 Analyzing profiles...",
-  "step": 2,
-  "total": 4
-}
-```
-
-Updates the step indicator UI. The frontend highlights the current step and shows the status text.
-
-### Message chunk
-```json
-{
-  "type": "message",
-  "message": "token"
-}
-```
-
-Appends text to the output. The frontend concatenates these tokens to build the full response.
-
-### Done chunk
-```json
-{
-  "type": "done"
-}
-```
-
-Signals the end of the stream. The frontend sets `loading: false`.
+Both surface to the user, but differently:
+- Subflows get prominent icons, status badges, and position in the timeline
+- Tool calls are nested details, shown in muted text
 
 ## Run Locally
 
@@ -137,13 +85,14 @@ Signals the end of the stream. The frontend sets `loading: false`.
 
 ```bash
 cd patterns/04-streaming-progress/backend
-export GOOGLE_API_KEY="your-key"
 uv venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 uv pip install -e .
-uv run python src/main.py
+export GOOGLE_GENAI_API_KEY="your-key-here"
+python src/main.py
 ```
 
-Backend runs on `http://localhost:8000`.
+Backend runs on `http://localhost:8000`
 
 ### Frontend
 
@@ -153,85 +102,72 @@ npm install
 npm run dev
 ```
 
-Frontend runs on `http://localhost:3000`.
+Frontend runs on `http://localhost:3000`
 
-Enter a topic like "B2B SaaS companies in healthcare" and click "Find Leads". Watch the steps light up and text stream in.
+### Usage
+
+1. Open `http://localhost:3000`
+2. Enter a target customer description (e.g., "B2B SaaS founders in Chicago who raised Series A in 2024")
+3. Click "Find Leads"
+4. Watch the timeline populate on the left as each subflow executes
+5. See the outreach drafts stream in on the right
 
 ## Extend This
 
-### Add estimated time per step
+### Add Real Tool Integrations
 
-Include `estimatedSeconds` in the status chunk:
+Replace the simulated tool calls with real APIs:
+- [Apify](https://apify.com/) for LinkedIn scraping
+- [Apollo.io](https://www.apollo.io/) for contact enrichment
+- [Clearbit](https://clearbit.com/) for company data
 
-```json
-{
-  "type": "status",
-  "status": "📊 Analyzing profiles...",
-  "step": 2,
-  "total": 4,
-  "estimatedSeconds": 5
-}
-```
+### Add Cancellation
 
-Show a countdown timer in the UI next to the current step.
+Use `AbortController` to let users stop a running flow:
 
-### Add cancellation
-
-Use an `AbortController` in the hook:
-
-```ts
-const abortController = new AbortController();
-const response = await fetch(apiEndpoint, {
-  signal: abortController.signal,
+```typescript
+const controller = new AbortController();
+fetch("http://localhost:8000/flow/research", {
+  signal: controller.signal,
   // ...
 });
 
-// Cancel button calls:
-abortController.abort();
+// Later:
+controller.abort();
 ```
 
-On the backend, detect client disconnect and stop processing.
+### Case 2: Model-Controlled Flow
 
-### Add retry on step failure
+This pattern shows app-controlled flow (you write the sequence). For model-controlled flow (the LLM decides what tools to call), replace the deterministic sequence with:
 
-If a step fails, send an error chunk:
+```python
+@ai.prompt
+def research_agent(target: str):
+    """
+    You are a lead research agent. Given a target customer description,
+    search for leads, enrich profiles, score them, and draft outreach.
 
-```json
-{
-  "type": "error",
-  "step": 2,
-  "message": "Failed to analyze profiles",
-  "retryable": true
-}
+    Target: {target}
+    """
+
+# Then stream the agent's tool calls
+sr = ai.generate_stream(prompt=research_agent, tools=[web_search, enrich, score])
 ```
 
-The frontend can show a "Retry Step 2" button that re-runs just that step.
+You'll need to adapt the chunk emission to fire on LLM tool call events rather than your hardcoded sequence.
 
-### Add sub-steps
+## Key Takeaways
 
-For complex steps, stream sub-progress:
+1. **Typed chunks > plain text** — structure enables better UX
+2. **Timeline ≠ Artifact** — process state and output are different things
+3. **Subflows = orchestration, Tools = execution** — both matter to users
+4. **App-controlled flows can be precise** — when you know the sequence, surface it
+5. **SSE is simple** — `data: {json}\n\n` is all you need
 
-```json
-{
-  "type": "status",
-  "status": "📊 Analyzing profiles...",
-  "step": 2,
-  "total": 4,
-  "subStep": 3,
-  "subTotal": 10
-}
-```
+This pattern works best when:
+- You control the flow sequence (not the model)
+- The flow has 3+ distinct steps
+- Users care about intermediate progress (not just the final result)
+- You want to build trust by showing your work
 
-Render a nested progress bar under the current step.
-
-## Point Your Agent
-
-**Prompt for building this pattern:**
-
-> I have a multi-step agent flow that takes 10-30 seconds. Users see a spinner and wonder if it's stuck. I want to stream live progress updates—show which step the agent is on (e.g., "Step 2 of 4: Analyzing profiles...") and stream the text output as it generates.
->
-> On the backend, use FastAPI with StreamingResponse and SSE. Yield two chunk types: `{"type": "status", "status": "...", "step": N, "total": N}` for step updates, and `{"type": "message", "message": "token"}` for text. End with `{"type": "done"}`.
->
-> On the frontend, create a React hook that parses the SSE stream and maintains state for `status`, `step`, `totalSteps`, and `output`. Render a vertical step indicator with ✓ for completed, → for current (animated), and ○ for pending. Stream the text output below.
->
-> The UX goal: users see exactly what the agent is doing and how far along it is, so they trust the process and stay engaged.
+For model-controlled flows with unpredictable tool sequences, adapt the chunk emission logic but keep the two-panel UX concept.

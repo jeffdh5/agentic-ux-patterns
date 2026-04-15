@@ -1,23 +1,19 @@
 import asyncio
 import json
-import os
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from genkit import Genkit
-from genkit.google_genai import GoogleAI
 from pydantic import BaseModel
 
-
-class ResearchRequest(BaseModel):
-    topic: str
-
+from genkit import Genkit
+from genkit.plugins.google_genai import GoogleAI
 
 ai = Genkit(plugins=[GoogleAI()], model="googleai/gemini-2.0-flash")
 app = FastAPI()
 
+# CORS for localhost:3000
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -27,43 +23,111 @@ app.add_middleware(
 )
 
 
-async def research_flow(topic: str) -> AsyncGenerator[str, None]:
-    total_steps = 4
+class ResearchInput(BaseModel):
+    target: str  # e.g. "B2B SaaS founders in Chicago who raised Series A"
 
-    # Step 1: Search for leads
-    yield f"data: {json.dumps({'type': 'status', 'status': f'🔍 Searching for leads on {topic}...', 'step': 1, 'total': total_steps})}\n\n"
-    await asyncio.sleep(0.5)
-    for chunk in ["Found ", "15 ", "potential ", "leads ", "in ", "SaaS ", "industry.\n"]:
-        yield f"data: {json.dumps({'type': 'message', 'message': chunk})}\n\n"
-        await asyncio.sleep(0.05)
 
-    # Step 2: Analyze profiles
-    yield f"data: {json.dumps({'type': 'status', 'status': '📊 Analyzing profiles...', 'step': 2, 'total': total_steps})}\n\n"
-    await asyncio.sleep(0.5)
-    for chunk in ["Analyzing ", "company ", "size, ", "tech ", "stack, ", "and ", "recent ", "activity...\n"]:
-        yield f"data: {json.dumps({'type': 'message', 'message': chunk})}\n\n"
-        await asyncio.sleep(0.05)
-
-    # Step 3: Draft outreach (use real AI streaming)
-    yield f"data: {json.dumps({'type': 'status', 'status': '✍️ Drafting outreach...', 'step': 3, 'total': total_steps})}\n\n"
-    await asyncio.sleep(0.5)
-
-    prompt = f"Write a brief, personalized cold email to a potential lead in the {topic} space. Keep it under 3 sentences."
-    async for chunk in ai.generate_stream(prompt):
-        if chunk.text:
-            yield f"data: {json.dumps({'type': 'message', 'message': chunk.text})}\n\n"
-
-    # Step 4: Done
-    yield f"data: {json.dumps({'type': 'status', 'status': '✅ Done', 'step': 4, 'total': total_steps})}\n\n"
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+def chunk(**kwargs) -> str:
+    """Format a chunk as SSE data."""
+    return f"data: {json.dumps(kwargs)}\n\n"
 
 
 @app.post("/flow/research")
-async def research(request: ResearchRequest):
-    return StreamingResponse(
-        research_flow(request.topic),
-        media_type="text/event-stream",
-    )
+async def research(body: ResearchInput):
+    async def run() -> AsyncGenerator[str, None]:
+        # Subflow 1: search_leads
+        yield chunk(
+            type="subflow",
+            name="search_leads",
+            status="started",
+            label="Searching for leads...",
+        )
+        yield chunk(
+            type="tool_call",
+            tool="web_search",
+            input={"query": f"{body.target} site:linkedin.com"},
+        )
+        await asyncio.sleep(0.8)
+        leads = [
+            "Acme Corp",
+            "Beacon AI",
+            "Cascade Labs",
+            "Drift Systems",
+            "Echo Health",
+        ]
+        yield chunk(
+            type="tool_result",
+            tool="web_search",
+            preview=f"Found {len(leads)} matching companies",
+        )
+        yield chunk(
+            type="subflow",
+            name="search_leads",
+            status="done",
+            label=f"Found {len(leads)} companies",
+        )
+
+        # Subflow 2: enrich_profiles
+        yield chunk(
+            type="subflow",
+            name="enrich_profiles",
+            status="started",
+            label="Enriching profiles...",
+        )
+        for lead in leads[:3]:
+            yield chunk(type="tool_call", tool="enrich", input={"company": lead})
+            await asyncio.sleep(0.3)
+            yield chunk(
+                type="tool_result",
+                tool="enrich",
+                preview=f"{lead}: 45 employees, $8M raised, Series A",
+            )
+        yield chunk(
+            type="subflow", name="enrich_profiles", status="done", label="Profiles enriched"
+        )
+
+        # Subflow 3: score_leads
+        yield chunk(
+            type="subflow",
+            name="score_leads",
+            status="started",
+            label="Scoring against ICP...",
+        )
+        await asyncio.sleep(0.5)
+        yield chunk(
+            type="subflow",
+            name="score_leads",
+            status="done",
+            label="Leads ranked by fit",
+        )
+
+        # Subflow 4: draft_outreach — streams artifact via ai.generate_stream
+        yield chunk(
+            type="subflow",
+            name="draft_outreach",
+            status="started",
+            label="Drafting personalized outreach...",
+        )
+        prompt = f"Write a personalized first line for cold outreach to the top 3 B2B SaaS founders matching: {body.target}. Format as markdown with company name headers and a 1-2 sentence opener for each."
+        sr = ai.generate_stream(prompt=prompt)
+        async for model_chunk in sr.stream:
+            if model_chunk.text:
+                yield chunk(
+                    type="artifact",
+                    id="leads-report",
+                    title="Outreach Drafts",
+                    content=model_chunk.text,
+                    mode="append",
+                )
+        yield chunk(
+            type="subflow",
+            name="draft_outreach",
+            status="done",
+            label="Outreach ready",
+        )
+        yield chunk(type="done")
+
+    return StreamingResponse(run(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":
